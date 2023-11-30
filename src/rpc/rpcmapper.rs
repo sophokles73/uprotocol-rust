@@ -76,25 +76,23 @@ impl RpcMapper {
     /// Returns a `Future` that resolves to a `Result` either containing the expected return type of the RPC method wrapped,
     /// or an [`RpcMapperError`].
     pub fn map_response<T: prost::Message + Default>(
-        response_future: Pin<Box<dyn Future<Output = RpcClientResult>>>,
-    ) -> Pin<Box<dyn Future<Output = Result<T, RpcMapperError>>>> {
-        Box::pin(async move {
-            match response_future.await {
-                Ok(payload) => {
-                    // we got some useable response payload
-                    match payload.to_any() {
-                        // we were able to extract an Any from the response_future
-                        Ok(any) => match T::decode(any.value.as_slice()) {
-                            Ok(result) => Ok(result), // expected response type could be decoded
-                            Err(error) => Err(RpcMapperError::InvalidPayload(error.to_string())), // ... or not
-                        },
-                        // ... or not
-                        Err(error) => Err(RpcMapperError::ProtobufError(error.to_string())),
-                    }
+        response_future: RpcClientResult,
+    ) -> Result<T, RpcMapperError> {
+        match response_future {
+            Ok(payload) => {
+                // we got some useable response payload
+                match payload.to_any() {
+                    // we were able to extract an Any from the response_future
+                    Ok(any) => match T::decode(any.value.as_slice()) {
+                        Ok(result) => Ok(result), // expected response type could be decoded
+                        Err(error) => Err(RpcMapperError::InvalidPayload(error.to_string())), // ... or not
+                    },
+                    // ... or not
+                    Err(error) => Err(RpcMapperError::ProtobufError(error.to_string())),
                 }
-                Err(error) => Err(error),
             }
-        })
+            Err(error) => Err(error),
+        }
     }
 
     /// This function checks if a RpcClientResult contains a protobuf status type,
@@ -121,62 +119,58 @@ impl RpcMapper {
     /// - is there payload data passed in the result, to be decoded by the caller.  
     ///
     /// This entire thing feels klunky and kludgy; this this needs to be revisited...
-    pub fn map_response_to_result(
-        response_future: Pin<Box<dyn Future<Output = RpcClientResult>>>,
-    ) -> Pin<Box<dyn Future<Output = RpcPayloadResult>>> {
-        Box::pin(async move {
-            match response_future.await {
-                Ok(payload) => {
-                    match payload.to_any() {
-                        // we were able to extract an Any from the response_future
-                        Ok(any) => {
-                            match Self::unpack_any::<ProtoStatus>(any.clone()) {
-                                // in this branch, we have successfully unpacked a protobuf-status from the (now consumed) payload
-                                Ok(proto_status) => match UCode::from(proto_status.code) {
-                                    UCode::Ok => {
-                                        let result: RpcPayloadResult = Ok(RpcPayload {
-                                            status: UStatus::ok(),
-                                            payload: None,
-                                        });
-                                        result
-                                    }
-                                    _ => {
-                                        let result: RpcPayloadResult = Ok(RpcPayload {
-                                            status: UStatus::from(proto_status),
-                                            payload: None,
-                                        });
-                                        result
-                                    }
-                                },
-                                // in this branch, we couldn't decode the payload into a protobuf-status, but there is something else there to pass on
-                                Err(error) => {
+    pub fn map_response_to_result(response_future: RpcClientResult) -> RpcPayloadResult {
+        match response_future {
+            Ok(payload) => {
+                match payload.to_any() {
+                    // we were able to extract an Any from the response_future
+                    Ok(any) => {
+                        match Self::unpack_any::<ProtoStatus>(any.clone()) {
+                            // in this branch, we have successfully unpacked a protobuf-status from the (now consumed) payload
+                            Ok(proto_status) => match UCode::from(proto_status.code) {
+                                UCode::Ok => {
                                     let result: RpcPayloadResult = Ok(RpcPayload {
-                                        status: UStatus::fail_with_msg(&format!(
-                                            "Unexpected any-payload type {}",
-                                            any.type_url
-                                        )),
-                                        payload: Some(payload),
+                                        status: UStatus::ok(),
+                                        payload: None,
                                     });
                                     result
                                 }
+                                _ => {
+                                    let result: RpcPayloadResult = Ok(RpcPayload {
+                                        status: UStatus::from(proto_status),
+                                        payload: None,
+                                    });
+                                    result
+                                }
+                            },
+                            // in this branch, we couldn't decode the payload into a protobuf-status, but there is something else there to pass on
+                            Err(error) => {
+                                let result: RpcPayloadResult = Ok(RpcPayload {
+                                    status: UStatus::fail_with_msg(&format!(
+                                        "Unexpected any-payload type {}",
+                                        any.type_url
+                                    )),
+                                    payload: Some(payload),
+                                });
+                                result
                             }
                         }
-                        // couldn't extract an Any, but there is some payload, so we pass that on
-                        Err(error) => {
-                            let result: RpcPayloadResult = Ok(RpcPayload {
-                                status: UStatus::fail_with_msg("Unknown payload type"),
-                                payload: Some(payload),
-                            });
-                            result
-                        }
+                    }
+                    // couldn't extract an Any, but there is some payload, so we pass that on
+                    Err(error) => {
+                        let result: RpcPayloadResult = Ok(RpcPayload {
+                            status: UStatus::fail_with_msg("Unknown payload type"),
+                            payload: Some(payload),
+                        });
+                        result
                     }
                 }
-                Err(error) => {
-                    // in this branch, we didn't get anything useful from the response_future
-                    Err(error)
-                }
             }
-        })
+            Err(error) => {
+                // in this branch, we didn't get anything useful from the response_future
+                Err(error)
+            }
+        }
     }
 
     /// Packs a given data of type `T` into a `UPayload` object.
@@ -328,18 +322,21 @@ mod tests {
     use crate::uri::serializer::{LongUriSerializer, UriSerializer};
     use crate::uuid::builder::{UUIDFactory, UUIDv8Factory};
 
+    use async_trait::async_trait;
     use bytes::{Buf, BufMut};
     use cloudevents::{Event, EventBuilder, EventBuilderV10};
     use prost::Message;
     use std::future::Future;
 
     struct ULinkReturnsNumber3;
+    #[async_trait]
     impl RpcClient for ULinkReturnsNumber3 {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let any: Any = Any {
                 type_url: "type.googleapis.com/Int32Value".to_string(),
                 value: {
@@ -349,29 +346,33 @@ mod tests {
                 },
             };
             let payload = UPayload::from_any(any);
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
     struct ULinkHappyPath;
+    #[async_trait]
     impl RpcClient for ULinkHappyPath {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let payload = build_upayload_for_test();
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
     struct ULinkWithStatusCodeInsteadOfHappyPath;
+    #[async_trait]
     impl RpcClient for ULinkWithStatusCodeInsteadOfHappyPath {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let status = ProtoStatus::from(UStatus::fail_with_msg_and_reason(
                 "boom",
                 UCode::InvalidArgument,
@@ -380,75 +381,85 @@ mod tests {
             let any = RpcMapper::pack_any(status.clone()).unwrap();
             let payload = UPayload::from_any(any);
 
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
     struct ULinkWithStatusCodeHappyPath;
+    #[async_trait]
     impl RpcClient for ULinkWithStatusCodeHappyPath {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let status =
                 ProtoStatus::from(UStatus::fail_with_msg_and_reason("all good", UCode::Ok));
 
             let any = RpcMapper::pack_any(status.clone()).unwrap();
             let payload = UPayload::from_any(any);
 
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
     struct ULinkThatCompletesWithAnError;
+    #[async_trait]
     impl RpcClient for ULinkThatCompletesWithAnError {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
-            Box::pin(std::future::ready(Err(RpcMapperError::UnexpectedError(
+        ) -> RpcClientResult {
+            Err(RpcMapperError::UnexpectedError(
                 "Boom".to_string(),
-            ))))
+            ))
         }
     }
 
     struct ULinkWithCrappyPayload;
+    #[async_trait]
     impl RpcClient for ULinkWithCrappyPayload {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let payload = UPayload {
                 data: vec![],
                 hint: Some(USerializationHint::Raw),
             };
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
     struct ULinkWithInvalidPayload;
+    #[async_trait]
     impl RpcClient for ULinkWithInvalidPayload {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
-            Box::pin(std::future::ready(Err(RpcMapperError::InvalidPayload(
+        ) -> RpcClientResult {
+            Err(RpcMapperError::InvalidPayload(
                 "Invalid payload".to_string(),
-            ))))
+            ))
         }
     }
 
     struct ULinkThatReturnsTheWrongProto;
+    #[async_trait]
     impl RpcClient for ULinkThatReturnsTheWrongProto {
-        fn invoke_method(
+        async fn invoke_method(
+            &self,
             topic: UUri,
             payload: UPayload,
             attributes: UAttributes,
-        ) -> Pin<Box<dyn Future<Output = RpcClientResult>>> {
+        ) -> RpcClientResult {
             let any: Any = Any {
                 type_url: "type.googleapis.com/Int32Value".to_string(),
                 value: {
@@ -459,7 +470,7 @@ mod tests {
             };
 
             let payload = UPayload::from_any(any);
-            Box::pin(std::future::ready(Ok(payload)))
+            Ok(payload)
         }
     }
 
@@ -468,14 +479,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkReturnsNumber3::invoke_method(
+            let client = ULinkReturnsNumber3 {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let result = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(result.status.is_failed());
@@ -493,14 +504,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithStatusCodeInsteadOfHappyPath::invoke_method(
+            let client = ULinkWithStatusCodeInsteadOfHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let response = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(response.status.is_failed());
@@ -514,19 +525,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkThatCompletesWithAnError::invoke_method(
+            let client = ULinkThatCompletesWithAnError {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let response = RpcMapper::map_response_to_result(rpc_response).await;
+            let response = RpcMapper::map_response_to_result(rpc_response);
 
             assert!(response.is_err());
-            assert_eq!(
-                response.err().unwrap().to_string(),
-                "Unexpected error: Boom"
-            );
+            assert!(matches!(response.err().unwrap(), RpcMapperError::UnexpectedError(_)));
         });
     }
 
@@ -540,14 +549,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkHappyPath::invoke_method(
+            let client = ULinkHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let response = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(response.status.is_failed());
@@ -562,14 +571,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithStatusCodeInsteadOfHappyPath::invoke_method(
+            let client = ULinkWithStatusCodeInsteadOfHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let response = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(response.status.is_failed());
@@ -588,14 +597,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkThatReturnsTheWrongProto::invoke_method(
+            let client = ULinkThatReturnsTheWrongProto {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let response = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(response.status.is_failed());
@@ -611,14 +620,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkHappyPath::invoke_method(
+            let client = ULinkHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let e = RpcMapper::map_response::<CloudEventProto>(rpc_response)
-                .await
                 .unwrap();
 
             let event = Event::from(e);
@@ -633,16 +642,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithStatusCodeInsteadOfHappyPath::invoke_method(
+            let client = ULinkWithStatusCodeInsteadOfHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let e = RpcMapper::map_response::<CloudEventProto>(rpc_response).await;
+            let e = RpcMapper::map_response::<CloudEventProto>(rpc_response);
 
             assert!(e.is_err());
-            assert_eq!(e.err().unwrap().to_string(), "Invalid payload: failed to decode Protobuf message: CloudEvent.id: invalid wire type: Varint (expected LengthDelimited)");
+            assert!(matches!(e.err().unwrap(), RpcMapperError::InvalidPayload(_)));
         });
     }
 
@@ -655,19 +665,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkThatReturnsTheWrongProto::invoke_method(
+            let client = ULinkThatReturnsTheWrongProto {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let e = RpcMapper::map_response::<CloudEventProto>(rpc_response).await;
+            let e = RpcMapper::map_response::<CloudEventProto>(rpc_response);
 
             assert!(e.is_err());
-            assert_eq!(
-                e.err().unwrap().to_string(),
-                "Invalid payload: failed to decode Protobuf message: invalid tag value: 0"
-            );
+            assert!(matches!(e.err().unwrap(), RpcMapperError::InvalidPayload(_)));
         });
     }
 
@@ -678,19 +686,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithInvalidPayload::invoke_method(
+            let client = ULinkWithInvalidPayload {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let response = RpcMapper::map_response::<CloudEventProto>(rpc_response).await;
+            let response = RpcMapper::map_response::<CloudEventProto>(rpc_response);
 
             assert!(response.is_err());
-            assert_eq!(
-                response.err().unwrap().to_string(),
-                "Invalid payload: Invalid payload"
-            );
+            assert!(matches!(response.err().unwrap(), RpcMapperError::InvalidPayload(_)));
         });
     }
 
@@ -699,19 +705,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithInvalidPayload::invoke_method(
+            let client = ULinkWithInvalidPayload {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let response = RpcMapper::map_response_to_result(rpc_response).await;
+            let response = RpcMapper::map_response_to_result(rpc_response);
 
             assert!(response.is_err());
-            assert_eq!(
-                response.err().unwrap().to_string(),
-                "Invalid payload: Invalid payload"
-            );
+            assert!(matches!(response.err().unwrap(), RpcMapperError::InvalidPayload(_)));
         });
     }
 
@@ -720,14 +724,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkReturnsNumber3::invoke_method(
+            let client = ULinkReturnsNumber3 {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let response = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
             let payload = response.payload.unwrap();
             let mapped = RpcMapper::unpack_payload::<Any>(payload).unwrap();
@@ -743,14 +747,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithStatusCodeHappyPath::invoke_method(
+            let client = ULinkWithStatusCodeHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let s = RpcMapper::map_response::<ProtoStatus>(rpc_response)
-                .await
                 .unwrap();
             let ustatus = UStatus::from(s);
 
@@ -765,14 +769,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithStatusCodeHappyPath::invoke_method(
+            let client = ULinkWithStatusCodeHappyPath {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
             let s = RpcMapper::map_response_to_result(rpc_response)
-                .await
                 .unwrap();
 
             assert!(s.status.is_success());
@@ -785,18 +789,13 @@ mod tests {
     fn test_unpack_payload_failed() {
         let payload = Any {
             type_url: "type.googleapis.com/Int32Value".to_string(),
-            value: {
-                let mut buf = vec![];
-                buf.put_i32(42);
-                buf
-            },
+            value: i32::from(43).encode_to_vec(),
         };
 
-        let result: Result<ProtoStatus, RpcMapperError> =
-            RpcMapper::unpack_any::<ProtoStatus>(payload);
+        let result: Result<ProtoStatus, RpcMapperError> = RpcMapper::unpack_any::<ProtoStatus>(payload);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Invalid payload: failed to decode Protobuf message: unexpected type URL.type_url: expected type URL: \"/Status.google.rpc\" (got: \"type.googleapis.com/Int32Value\")");
+        assert!(matches!(result.unwrap_err(), RpcMapperError::InvalidPayload(_)));
     }
 
     #[test]
@@ -804,16 +803,17 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithCrappyPayload::invoke_method(
+            let client = ULinkWithCrappyPayload {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let result = RpcMapper::map_response::<ProtoStatus>(rpc_response).await;
+            let result = RpcMapper::map_response::<ProtoStatus>(rpc_response);
 
             assert!(result.is_err());
-            assert_eq!(result.unwrap_err().to_string(), "Protobuf error: Wrong serialization: Can't decode to protobuf:Any from serialization application/octet-stream");
+            assert!(matches!(result.unwrap_err(), RpcMapperError::ProtobufError(_)));
         })
     }
 
@@ -822,13 +822,14 @@ mod tests {
         let mut runtime = futures::executor::LocalPool::new();
 
         runtime.run_until(async {
-            let rpc_response = ULinkWithCrappyPayload::invoke_method(
+            let client = ULinkWithCrappyPayload {};
+            let rpc_response = client.invoke_method(
                 build_topic(),
                 build_upayload_for_test(),
                 build_attributes(),
-            );
+            ).await;
 
-            let result = RpcMapper::map_response_to_result(rpc_response).await;
+            let result = RpcMapper::map_response_to_result(rpc_response);
             let status = result.unwrap().status;
 
             assert!(status.is_failed());

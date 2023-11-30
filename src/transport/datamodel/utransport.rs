@@ -11,19 +11,31 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use crate::transport::datamodel::{UAttributes, UListener, UPayload, UStatus};
+use async_trait::async_trait;
+use std::sync::mpsc::Sender;
+
+use crate::transport::datamodel::{UAttributes, UPayload, UStatus};
 use crate::uri::datamodel::{UEntity, UUri};
 
+#[derive(Debug, Clone)]
+pub struct UMessage {
+    pub topic: UUri,
+    pub attributes: UAttributes,
+    pub payload: UPayload,
+}
+
+#[async_trait]
 pub trait UTransport {
+
     /// API to register the calling uE with the underlying transport implementation.
-    fn register(&self, uentity: UEntity, token: &[u8]) -> UStatus;
+    async fn register(&self, uentity: UEntity, token: &[u8]) -> Result<(), UStatus>;
 
     /// Transmit UPayload to the topic using the attributes defined in UTransportAttributes.
-    fn send(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> UStatus;
+    async fn send(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> Result<(), UStatus>;
 
     /// Register a method that will be called when a message comes in on the specific topic.
-    fn register_listener(&self, topic: UUri, listener: dyn UListener) -> UStatus;
+    async fn register_listener(&self, topic: UUri, listener: Sender<UMessage>) -> Result<String, UStatus>;
 
     /// Unregister a method on a topic. Messages arriving on this topic will no longer be processed by this listener.
-    fn unregister_listener(&self, topic: UUri, listener: dyn UListener) -> UStatus;
+    async fn unregister_listener(&self, id: String) -> Result<(), UStatus>;
 }

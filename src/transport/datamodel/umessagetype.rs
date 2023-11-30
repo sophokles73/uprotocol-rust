@@ -24,6 +24,16 @@ pub enum UMessageType {
     Response,
 }
 
+impl UMessageType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            UMessageType::Publish => PUBLISH,
+            UMessageType::Request => REQUEST,
+            UMessageType::Response => RESPONSE,
+        }
+    }
+}
+
 impl Default for UMessageType {
     fn default() -> Self {
         Self::Publish

@@ -15,7 +15,9 @@
 use crate::uri::datamodel::{UAuthority, UEntity, UResource};
 
 use regex::Regex;
-use std::fmt;
+use url::form_urlencoded::Parse;
+use std::error::Error;
+use std::fmt::{self, Display};
 use std::net::IpAddr;
 
 /// `UUri` is a data representation of a URI (Uniform Resource Identifier).
