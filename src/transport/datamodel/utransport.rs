@@ -12,7 +12,6 @@
  ********************************************************************************/
 
 use async_trait::async_trait;
-use std::sync::mpsc::Sender;
 
 use crate::transport::datamodel::{UAttributes, UPayload, UStatus};
 use crate::uri::datamodel::{UEntity, UUri};
@@ -34,7 +33,8 @@ pub trait UTransport {
     async fn send(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> Result<(), UStatus>;
 
     /// Register a method that will be called when a message comes in on the specific topic.
-    async fn register_listener(&self, topic: UUri, listener: Sender<UMessage>) -> Result<String, UStatus>;
+    async fn register_listener<T>(&self, topic: UUri, listener: T) -> Result<String, UStatus>
+        where T: Fn(UMessage) -> Result<(), Box<dyn std::error::Error>> + Send + Sync + 'static;
 
     /// Unregister a listener. Messages arriving on this topic will no longer be processed by this listener.
     async fn unregister_listener(&self, id: String) -> Result<(), UStatus>;
