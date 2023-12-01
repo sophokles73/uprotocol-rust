@@ -36,6 +36,6 @@ pub trait UTransport {
     /// Register a method that will be called when a message comes in on the specific topic.
     async fn register_listener(&self, topic: UUri, listener: Sender<UMessage>) -> Result<String, UStatus>;
 
-    /// Unregister a method on a topic. Messages arriving on this topic will no longer be processed by this listener.
+    /// Unregister a listener. Messages arriving on this topic will no longer be processed by this listener.
     async fn unregister_listener(&self, id: String) -> Result<(), UStatus>;
 }
