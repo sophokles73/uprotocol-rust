@@ -11,12 +11,15 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+use async_trait::async_trait;
+
 use crate::transport::datamodel::uattributes::UAttributes;
 use crate::transport::datamodel::upayload::UPayload;
 use crate::transport::datamodel::UStatus;
 use crate::uri::datamodel::UUri;
 
 /// For any implementation that defines some kind of callback or function that will be called to handle incoming messages.
+#[async_trait]
 pub trait UListener {
     /// Method called to handle or process events.
     ///
@@ -28,6 +31,6 @@ pub trait UListener {
     ///
     /// # Returns
     ///
-    /// Returns a [`UStatus`] every time a message is received and processed.
-    fn on_receive(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> UStatus;
+    /// Returns a [`UStatus`] if processing the message has failed.
+    async fn on_receive(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> Result<(), UStatus>;
 }
