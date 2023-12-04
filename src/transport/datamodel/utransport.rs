@@ -25,17 +25,23 @@ pub struct UMessage {
 
 #[async_trait]
 pub trait UTransport {
-
     /// API to register the calling uE with the underlying transport implementation.
     async fn register(&self, uentity: UEntity, token: &[u8]) -> Result<(), UStatus>;
 
     /// Transmit UPayload to the topic using the attributes defined in UTransportAttributes.
-    async fn send(&self, topic: UUri, payload: UPayload, attributes: UAttributes) -> Result<(), UStatus>;
+    async fn send(
+        &self,
+        topic: UUri,
+        payload: UPayload,
+        attributes: UAttributes,
+    ) -> Result<(), UStatus>;
 
     /// Register a method that will be called when a message comes in on the specific topic.
-    async fn register_listener<T>(&self, topic: UUri, listener: T) -> Result<String, UStatus>
-        where T: Fn(UMessage) + Send + 'static;
-
+    // async fn register_listener<T>(&self, topic: UUri, listener: T) -> Result<String, UStatus>
+    // where
+    //     T: Fn(UMessage) + Send + 'static;
+    async fn register_listener(&self, topic: UUri, listener: dyn Fn(UMessage) + Send + 'static) -> Result<String, UStatus>;
+    
     /// Unregister a listener. Messages arriving on this topic will no longer be processed by this listener.
     async fn unregister_listener(&self, id: String) -> Result<(), UStatus>;
 }
